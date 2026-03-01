@@ -1,0 +1,506 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["fullTextSearch"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// ENUMS
+// ============================================================
+
+enum WorkspaceRole {
+  OWNER
+  ADMIN
+  MEMBER
+  GUEST
+}
+
+enum ChannelType {
+  PUBLIC
+  PRIVATE
+  ANNOUNCEMENT
+}
+
+enum ConversationType {
+  DIRECT
+  GROUP
+}
+
+enum MessageType {
+  TEXT
+  SYSTEM
+  FILE
+}
+
+enum NotificationType {
+  MESSAGE
+  MENTION
+  REACTION
+  INVITATION
+  CHANNEL_UPDATE
+  SYSTEM
+}
+
+enum UserStatus {
+  ONLINE
+  AWAY
+  DND
+  OFFLINE
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  EXPIRED
+}
+
+enum FileUploadStatus {
+  UPLOADING
+  COMPLETED
+  FAILED
+}
+
+// ============================================================
+// NEXTAUTH.JS COMPATIBLE MODELS
+// ============================================================
+
+model User {
+  id            String     @id @default(cuid())
+  name          String?
+  displayName   String?
+  email         String     @unique
+  emailVerified DateTime?
+  image         String?
+  passwordHash  String?
+  phone         String?
+  title         String?
+  bio           String?
+  timezone      String     @default("UTC")
+  status        UserStatus @default(OFFLINE)
+  customStatus  String?
+  lastSeenAt    DateTime?
+  deactivatedAt DateTime?
+  isAdmin       Boolean    @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // NextAuth relations
+  accounts Account[]
+  sessions Session[]
+
+  // Application relations
+  workspaceMemberships         WorkspaceMember[]
+  channelMemberships           ChannelMember[]
+  messages                     Message[]
+  reactions                    Reaction[]
+  files                        File[]
+  notifications                Notification[]
+  sentInvitations              Invitation[]                @relation("InvitationSender")
+  conversationParticipants     ConversationParticipant[]
+
+  @@index([email])
+  @@index([status])
+  @@map("users")
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// ============================================================
+// WORKSPACE
+// ============================================================
+
+model Workspace {
+  id          String  @id @default(cuid())
+  name        String
+  slug        String  @unique
+  description String?
+  icon        String?
+  domain      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members       WorkspaceMember[]
+  channels      Channel[]
+  invitations   Invitation[]
+  conversations Conversation[]
+  files         File[]
+  webhooks      Webhook[]
+
+  @@index([slug])
+  @@map("workspaces")
+}
+
+model WorkspaceMember {
+  id          String        @id @default(cuid())
+  workspaceId String
+  userId      String
+  role        WorkspaceRole @default(MEMBER)
+  nickname    String?
+
+  joinedAt  DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([workspaceId])
+  @@index([userId])
+  @@map("workspace_members")
+}
+
+model Invitation {
+  id          String           @id @default(cuid())
+  workspaceId String
+  email       String
+  role        WorkspaceRole    @default(MEMBER)
+  status      InvitationStatus @default(PENDING)
+  token       String           @unique @default(cuid())
+  invitedById String
+  expiresAt   DateTime
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  invitedBy User      @relation("InvitationSender", fields: [invitedById], references: [id])
+
+  @@index([workspaceId])
+  @@index([email])
+  @@index([token])
+  @@map("invitations")
+}
+
+// ============================================================
+// CHANNELS
+// ============================================================
+
+model Channel {
+  id          String      @id @default(cuid())
+  workspaceId String
+  name        String
+  slug        String
+  topic       String?
+  description String?
+  type        ChannelType @default(PUBLIC)
+  isDefault   Boolean     @default(false)
+  isArchived  Boolean     @default(false)
+  createdById String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  workspace      Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  members        ChannelMember[]
+  messages       Message[]
+  pinnedMessages PinnedMessage[]
+
+  @@unique([workspaceId, slug])
+  @@index([workspaceId])
+  @@index([workspaceId, type])
+  @@map("channels")
+}
+
+model ChannelMember {
+  id        String  @id @default(cuid())
+  channelId String
+  userId    String
+  isMuted   Boolean @default(false)
+
+  lastReadMessageId String?
+  lastReadAt        DateTime?
+
+  joinedAt  DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  channel Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([channelId, userId])
+  @@index([channelId])
+  @@index([userId])
+  @@map("channel_members")
+}
+
+// ============================================================
+// MESSAGES & THREADS
+// ============================================================
+
+model Message {
+  id             String      @id @default(cuid())
+  content        String      @db.Text
+  type           MessageType @default(TEXT)
+  authorId       String
+  channelId      String?
+  conversationId String?
+  parentId       String?
+
+  isEdited  Boolean   @default(false)
+  editedAt  DateTime?
+  isDeleted Boolean   @default(false)
+  deletedAt DateTime?
+
+  replyCount  Int       @default(0)
+  lastReplyAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  author       User          @relation(fields: [authorId], references: [id])
+  channel      Channel?      @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  parent       Message?      @relation("ThreadReplies", fields: [parentId], references: [id])
+  replies      Message[]     @relation("ThreadReplies")
+  reactions    Reaction[]
+  attachments  File[]
+  pinnedIn     PinnedMessage[]
+
+  @@index([channelId, createdAt])
+  @@index([conversationId, createdAt])
+  @@index([parentId])
+  @@index([authorId])
+  @@index([createdAt])
+  @@map("messages")
+}
+
+model PinnedMessage {
+  id         String @id @default(cuid())
+  messageId  String
+  channelId  String
+  pinnedById String
+
+  pinnedAt DateTime @default(now())
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  channel Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, channelId])
+  @@index([channelId])
+  @@map("pinned_messages")
+}
+
+model Reaction {
+  id        String @id @default(cuid())
+  emoji     String
+  messageId String
+  userId    String
+
+  createdAt DateTime @default(now())
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId, emoji])
+  @@index([messageId])
+  @@map("reactions")
+}
+
+// ============================================================
+// DIRECT MESSAGES / CONVERSATIONS
+// ============================================================
+
+model Conversation {
+  id          String           @id @default(cuid())
+  workspaceId String
+  type        ConversationType @default(DIRECT)
+  name        String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  workspace    Workspace                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  participants ConversationParticipant[]
+  messages     Message[]
+
+  @@index([workspaceId])
+  @@map("conversations")
+}
+
+model ConversationParticipant {
+  id             String  @id @default(cuid())
+  conversationId String
+  userId         String
+  isMuted        Boolean @default(false)
+
+  lastReadMessageId String?
+  lastReadAt        DateTime?
+
+  joinedAt DateTime @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, userId])
+  @@index([conversationId])
+  @@index([userId])
+  @@map("conversation_participants")
+}
+
+// ============================================================
+// FILES / ATTACHMENTS
+// ============================================================
+
+model File {
+  id           String           @id @default(cuid())
+  name         String
+  key          String           @unique
+  url          String
+  mimeType     String
+  size         Int
+  width        Int?
+  height       Int?
+  thumbnailUrl String?
+  status       FileUploadStatus @default(COMPLETED)
+
+  uploadedById String
+  workspaceId  String
+  messageId    String?
+
+  createdAt DateTime @default(now())
+
+  uploadedBy User      @relation(fields: [uploadedById], references: [id])
+  workspace  Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  message    Message?  @relation(fields: [messageId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId])
+  @@index([uploadedById])
+  @@index([messageId])
+  @@map("files")
+}
+
+// ============================================================
+// NOTIFICATIONS
+// ============================================================
+
+model Notification {
+  id     String           @id @default(cuid())
+  userId String
+  type   NotificationType
+  title  String
+  body   String
+  isRead Boolean          @default(false)
+
+  resourceType String?
+  resourceId   String?
+  workspaceId  String?
+  channelId    String?
+  messageId    String?
+
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@index([userId, createdAt])
+  @@map("notifications")
+}
+
+// ============================================================
+// WEBHOOKS
+// ============================================================
+
+enum WebhookEvent {
+  MESSAGE_CREATED
+  MESSAGE_UPDATED
+  MESSAGE_DELETED
+  MEMBER_JOINED
+  MEMBER_LEFT
+  CHANNEL_CREATED
+  CHANNEL_ARCHIVED
+  REACTION_ADDED
+  FILE_UPLOADED
+}
+
+model Webhook {
+  id          String   @id @default(cuid())
+  workspaceId String
+  name        String
+  url         String
+  secret      String
+  events      WebhookEvent[]
+  isActive    Boolean  @default(true)
+  description String?
+
+  createdById String
+
+  lastTriggeredAt DateTime?
+  failureCount    Int       @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  logs      WebhookLog[]
+
+  @@index([workspaceId])
+  @@map("webhooks")
+}
+
+model WebhookLog {
+  id         String @id @default(cuid())
+  webhookId  String
+  event      String
+  payload    String @db.Text
+  statusCode Int?
+  response   String? @db.Text
+  success    Boolean
+  duration   Int?
+  error      String?
+
+  createdAt DateTime @default(now())
+
+  webhook Webhook @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+
+  @@index([webhookId, createdAt])
+  @@map("webhook_logs")
+}
